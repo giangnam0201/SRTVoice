@@ -1,83 +1,126 @@
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
-/// Free TTS API service that generates MP3 audio from text.
-/// Uses Google Translate's TTS endpoint - free, no API key, unlimited.
+/// Free TTS API service using https://tts-api.netlify.app/
+/// Supports speed and pitch control, auto language detection.
+/// Returns audio bytes (MP3/WAV) for each text input.
 class TtsApiService {
-  /// Generate MP3 audio bytes from text using Google Translate TTS.
-  /// [text] - the text to speak
-  /// [language] - language code (e.g. 'en', 'vi', 'ja')
-  /// [slow] - if true, speaks slower
-  /// Returns MP3 bytes or null on failure.
-  static Future<Uint8List?> generateMp3(
+  static const String _baseUrl = 'https://tts-api.netlify.app';
+
+  /// Generate audio bytes from text.
+  /// [text] - text to speak
+  /// [language] - language code (e.g. 'en', 'vi', 'ja', 'auto')
+  /// [speed] - speech speed (1.0 = normal, >1 = faster, <1 = slower)
+  /// [pitch] - voice pitch (1.0 = normal)
+  /// Returns audio bytes or null on failure.
+  static Future<Uint8List?> generateAudio(
     String text,
     String language, {
-    bool slow = false,
+    double speed = 1.0,
+    double pitch = 1.0,
   }) async {
-    // Google Translate TTS has a ~200 char limit per request
-    // Split long text into chunks if needed
-    if (text.length > 200) {
-      final chunks = _splitText(text, 200);
+    if (text.trim().isEmpty) return null;
+
+    // This API has a text length limit, split if needed
+    if (text.length > 500) {
+      final chunks = _splitText(text, 500);
       final allBytes = BytesBuilder();
       for (final chunk in chunks) {
-        final bytes = await _fetchTts(chunk, language, slow);
-        if (bytes != null) {
-          allBytes.add(bytes);
-        }
+        final bytes = await _fetch(chunk, language, speed, pitch);
+        if (bytes != null) allBytes.add(bytes);
       }
       return allBytes.toBytes().isEmpty ? null : allBytes.toBytes();
     }
 
-    return await _fetchTts(text, language, slow);
+    return await _fetch(text, language, speed, pitch);
   }
 
-  static Future<Uint8List?> _fetchTts(String text, String lang, bool slow) async {
-    final speed = slow ? '0.24' : '0.5';
-    
-    // Try multiple TTS endpoints for reliability
-    final urls = [
-      'https://translate.google.com/translate_tts?ie=UTF-8&tl=$lang&client=tw-ob&q=${Uri.encodeComponent(text)}',
-      'https://translate.google.com.vn/translate_tts?ie=UTF-8&tl=$lang&client=tw-ob&q=${Uri.encodeComponent(text)}',
-    ];
+  /// Generate MP3 with speed adjusted to fit a target duration.
+  /// [text] - text to speak
+  /// [language] - language code
+  /// [targetDurationMs] - how long the audio should be (subtitle duration)
+  /// [basePitch] - pitch setting
+  static Future<Uint8List?> generateWithTiming(
+    String text,
+    String language, {
+    required int targetDurationMs,
+    double basePitch = 1.0,
+  }) async {
+    if (text.trim().isEmpty) return null;
+    if (targetDurationMs <= 0) targetDurationMs = 3000;
 
-    for (final url in urls) {
-      try {
-        final response = await http.get(
-          Uri.parse(url),
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://translate.google.com/',
-          },
-        ).timeout(const Duration(seconds: 15));
+    // Estimate: at speed 1.0, roughly 12-15 chars/sec for most languages
+    final charCount = text.length;
+    final estimatedMsAtSpeed1 = (charCount / 13.0) * 1000;
 
-        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-          return response.bodyBytes;
-        }
-      } catch (e) {
-        print('TTS API error for url: $e');
-        continue;
+    // Calculate speed to fit target duration
+    // If estimated > target, need to speed up (speed > 1)
+    // If estimated < target, need to slow down (speed < 1)
+    var speed = estimatedMsAtSpeed1 / targetDurationMs;
+    speed = speed.clamp(0.5, 3.0); // API supports wide range
+
+    return await generateAudio(text, language, speed: speed, pitch: basePitch);
+  }
+
+  static Future<Uint8List?> _fetch(String text, String lang, double speed, double pitch) async {
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/?text=${Uri.encodeComponent(text)}&lang=$lang&speed=$speed&pitch=$pitch',
+      );
+
+      final response = await http.get(uri, headers: {
+        'User-Agent': 'SRTVoice/1.0',
+      }).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+        return response.bodyBytes;
       }
+    } catch (e) {
+      print('TTS API error: $e');
     }
     return null;
   }
 
-  /// Split text into chunks at word boundaries.
+  /// Split text into chunks at sentence/word boundaries.
   static List<String> _splitText(String text, int maxLen) {
     final chunks = <String>[];
-    final words = text.split(' ');
-    var current = '';
+    // Try splitting at sentence boundaries first
+    final sentences = text.split(RegExp(r'(?<=[.!?])\s+'));
 
-    for (final word in words) {
+    var current = '';
+    for (final sentence in sentences) {
       if (current.isEmpty) {
-        current = word;
-      } else if ('$current $word'.length <= maxLen) {
-        current = '$current $word';
+        current = sentence;
+      } else if ('$current $sentence'.length <= maxLen) {
+        current = '$current $sentence';
       } else {
-        chunks.add(current);
-        current = word;
+        if (current.isNotEmpty) chunks.add(current);
+        current = sentence;
       }
     }
     if (current.isNotEmpty) chunks.add(current);
-    return chunks;
+
+    // If any chunk is still too long, split by words
+    final result = <String>[];
+    for (final chunk in chunks) {
+      if (chunk.length <= maxLen) {
+        result.add(chunk);
+      } else {
+        final words = chunk.split(' ');
+        var c = '';
+        for (final w in words) {
+          if (c.isEmpty) {
+            c = w;
+          } else if ('$c $w'.length <= maxLen) {
+            c = '$c $w';
+          } else {
+            result.add(c);
+            c = w;
+          }
+        }
+        if (c.isNotEmpty) result.add(c);
+      }
+    }
+    return result;
   }
 }

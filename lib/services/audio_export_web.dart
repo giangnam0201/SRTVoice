@@ -7,7 +7,7 @@ import 'tts_service.dart';
 import 'tts_api_service.dart';
 import 'audio_export_service.dart';
 
-/// Web implementation: Downloads MP3 from TTS API and triggers browser download.
+/// Web implementation: Downloads audio from TTS API and triggers browser download.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -19,17 +19,23 @@ Future<void> generatePlatformAudio(
 
   onProgress?.call(0, entries.length, 'Downloading audio from TTS API...');
 
-  // Download all segments
+  // Download audio for each subtitle
   final segments = <int, Uint8List>{};
   for (int i = 0; i < entries.length; i++) {
     final entry = entries[i];
-    if (entry.displayText.trim().isEmpty) continue;
+    final text = entry.displayText.trim();
+    if (text.isEmpty) continue;
 
-    final mp3 = await TtsApiService.generateMp3(entry.displayText, language);
-    if (mp3 != null && mp3.isNotEmpty) segments[i] = mp3;
+    final audioBytes = await TtsApiService.generateWithTiming(
+      text,
+      language,
+      targetDurationMs: entry.duration.inMilliseconds,
+    );
+
+    if (audioBytes != null && audioBytes.isNotEmpty) segments[i] = audioBytes;
 
     onProgress?.call(i + 1, entries.length, 'Downloaded ${i + 1}/${entries.length}');
-    await Future.delayed(const Duration(milliseconds: 100));
+    await Future.delayed(const Duration(milliseconds: 50));
   }
 
   if (segments.isEmpty) {
@@ -37,7 +43,7 @@ Future<void> generatePlatformAudio(
     return;
   }
 
-  // Combine into one MP3
+  // Combine with silence
   final output = BytesBuilder();
   var posMs = 0;
 
@@ -53,7 +59,7 @@ Future<void> generatePlatformAudio(
     final seg = segments[i];
     if (seg != null) {
       output.add(seg);
-      posMs += (seg.length / 4000 * 1000).round();
+      posMs += entry.duration.inMilliseconds;
     }
 
     final endMs = entry.endTime.inMilliseconds;
