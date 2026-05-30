@@ -1,0 +1,150 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --project-name srt_voice --org com.srtvoice --platforms web,android,windows temp_project
+          cp -r temp_project/web/* web/ 2>/dev/null || true
+          cp temp_project/web/favicon.png web/favicon.png 2>/dev/null || true
+          rm -rf temp_project
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Web
+        run: flutter build web --release
+
+      - name: Archive web build
+        run: |
+          cd build/web
+          zip -r ../../srt-voice-web.zip .
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: srt-voice-web.zip
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Create Flutter project scaffold for Android
+        run: |
+          flutter create --project-name srt_voice --org com.srtvoice --platforms android temp_project
+          rm -rf android
+          cp -r temp_project/android .
+          rm -rf temp_project
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Create Flutter project scaffold for Windows
+        run: |
+          flutter create --project-name srt_voice --org com.srtvoice --platforms windows temp_project
+          Remove-Item -Recurse -Force windows -ErrorAction SilentlyContinue
+          Copy-Item -Recurse temp_project/windows .
+          Remove-Item -Recurse -Force temp_project
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Windows
+        run: flutter build windows --release
+
+      - name: Archive Windows build
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath srt-voice-windows.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: srt-voice-windows.zip
+
+  create-release:
+    needs: [build-web, build-android, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "SRT Voice v1.0.${{ github.run_number }}"
+          body: |
+            ## SRT Voice Release
+
+            Convert subtitle files (.srt) to speech audio with correct timing.
+
+            ### Features:
+            - Load .srt subtitle files
+            - Translate subtitles between 30+ languages using MyMemory API
+            - Choose voice language and voice type
+            - Adjust speech rate and pitch
+            - Generate speech with exact subtitle timing
+            - Multi-platform: Web, Android, Windows
+
+            ### Downloads:
+            - **Web**: srt-voice-web.zip (deploy to any web server)
+            - **Android**: app-release.apk (install directly on Android)
+            - **Windows**: srt-voice-windows.zip (extract and run)
+          files: |
+            artifacts/web-build/srt-voice-web.zip
+            artifacts/android-build/app-release.apk
+            artifacts/windows-build/srt-voice-windows.zip
+          draft: false
+          prerelease: false
