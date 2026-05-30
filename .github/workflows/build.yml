@@ -68,7 +68,7 @@ jobs:
         run: |
           flutter create --project-name srt_voice --org com.srtvoice --platforms android .
 
-      - name: Update Kotlin version and compileSdk
+      - name: Update Kotlin version, compileSdk and minSdk
         run: |
           # Handle both .gradle and .gradle.kts formats
           if [ -f android/settings.gradle.kts ]; then
@@ -76,11 +76,15 @@ jobs:
           elif [ -f android/settings.gradle ]; then
             sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
           fi
-          # Update compileSdk
+          # Update compileSdk and minSdk
           if [ -f android/app/build.gradle.kts ]; then
             sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
+            sed -i 's/ndkVersion = flutter.ndkVersion/ndkVersion = "27.0.12077973"/' android/app/build.gradle.kts
           elif [ -f android/app/build.gradle ]; then
             sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle
+            sed -i 's/ndkVersion = flutter.ndkVersion/ndkVersion = "27.0.12077973"/' android/app/build.gradle
           fi
 
       - name: Get dependencies
