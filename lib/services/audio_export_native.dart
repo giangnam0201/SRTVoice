@@ -8,10 +8,9 @@ import 'tts_service.dart';
 import 'audio_export_service.dart';
 
 /// Native (Android/Windows) implementation:
-/// For each subtitle, uses TTS speak() while recording timing,
-/// then generates a combined WAV with proper silence gaps.
-/// The key fix: use awaitSpeakCompletion + speak() approach to get actual audio,
-/// since synthesizeToFile is unreliable on many Android devices.
+/// Uses speak() with proper timing to play audio live,
+/// and synthesizeToFile as backup for file generation.
+/// If synthesizeToFile fails (0-byte files), falls back to speak-only mode.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -28,185 +27,218 @@ Future<void> generatePlatformAudio(
 
   final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-  onProgress?.call(0, entries.length, 'Generating speech segments one by one...');
+  onProgress?.call(0, entries.length, 'Generating audio segments...');
 
-  // Generate each segment sequentially using synthesizeToFile
-  // The key: we must WAIT properly for each file to be written
+  // First try synthesizeToFile for each segment
   final segmentFiles = <int, File>{};
+  bool synthesizeWorks = true;
 
-  for (int i = 0; i < entries.length; i++) {
-    final entry = entries[i];
-    final segmentPath = '${outputDir.path}/seg_$i.wav';
+  // Test with first entry
+  final testPath = '${outputDir.path}/test_seg.wav';
+  await ttsService.setSpeechRate(speechRate);
+  await ttsService.synthesizeToFile(entries.first.displayText, testPath);
+  await Future.delayed(const Duration(milliseconds: 800));
 
-    // Calculate speech rate for THIS sentence to fit its duration
-    final entryDurationMs = entry.duration.inMilliseconds;
-    final adjustedRate = _calculateRate(entry.displayText, entryDurationMs, speechRate);
+  final testFile = File(testPath);
+  if (!await testFile.exists() || await testFile.length() <= 44) {
+    synthesizeWorks = false;
+  }
 
-    // Set rate for this segment
-    await ttsService.setSpeechRate(adjustedRate);
+  if (synthesizeWorks) {
+    // synthesizeToFile works! Generate all segments
+    segmentFiles[0] = testFile;
 
-    // Synthesize to file and WAIT for it
-    await ttsService.synthesizeToFile(entry.displayText, segmentPath);
+    for (int i = 1; i < entries.length; i++) {
+      final entry = entries[i];
+      final segmentPath = '${outputDir.path}/seg_$i.wav';
 
-    // Give Android TTS extra time to flush the file
-    await Future.delayed(const Duration(milliseconds: 500));
+      final entryDurationMs = entry.duration.inMilliseconds;
+      final adjustedRate = _calculateRate(entry.displayText, entryDurationMs, speechRate);
+      await ttsService.setSpeechRate(adjustedRate);
 
-    final file = File(segmentPath);
-    if (await file.exists()) {
-      final fileSize = await file.length();
-      if (fileSize > 44) {
+      await ttsService.synthesizeToFile(entry.displayText, segmentPath);
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      final file = File(segmentPath);
+      if (await file.exists() && await file.length() > 44) {
         segmentFiles[i] = file;
+      }
+
+      onProgress?.call(i + 1, entries.length, 'Generated ${i + 1}/${entries.length}');
+    }
+
+    // Also generate first entry with correct rate
+    final firstEntryDuration = entries.first.duration.inMilliseconds;
+    final firstRate = _calculateRate(entries.first.displayText, firstEntryDuration, speechRate);
+    if (firstRate != speechRate) {
+      await ttsService.setSpeechRate(firstRate);
+      final firstSegPath = '${outputDir.path}/seg_0_fixed.wav';
+      await ttsService.synthesizeToFile(entries.first.displayText, firstSegPath);
+      await Future.delayed(const Duration(milliseconds: 600));
+      final f = File(firstSegPath);
+      if (await f.exists() && await f.length() > 44) {
+        segmentFiles[0] = f;
       }
     }
 
-    onProgress?.call(
-      i + 1,
-      entries.length,
-      'Generated ${i + 1}/${entries.length} (rate: ${adjustedRate.toStringAsFixed(2)}, ${segmentFiles.containsKey(i) ? "OK" : "empty"})',
-    );
+    // Combine into final WAV
+    await _combineSegments(entries, segmentFiles, outputDir, timestamp, onProgress);
+  } else {
+    // synthesizeToFile doesn't work on this device
+    // Fall back to speaking with timing (live playback only)
+    onProgress?.call(0, entries.length,
+        'synthesizeToFile not supported. Using live playback with timing...');
+
+    await _speakWithTiming(entries, ttsService, speechRate, onProgress);
   }
 
+  // Clean up
+  try { await outputDir.delete(recursive: true); } catch (_) {}
+}
+
+/// Combine WAV segments into one file with correct timing gaps.
+Future<void> _combineSegments(
+  List<SubtitleEntry> entries,
+  Map<int, File> segmentFiles,
+  Directory outputDir,
+  int timestamp,
+  Function(int current, int total, String status)? onProgress,
+) async {
   if (segmentFiles.isEmpty) {
-    onProgress?.call(entries.length, entries.length,
-        'ERROR: TTS failed to generate any audio files. Your device TTS may not support synthesizeToFile. Try using Preview mode instead.');
+    onProgress?.call(0, 0, 'ERROR: No audio segments generated.');
     return;
   }
 
-  onProgress?.call(entries.length, entries.length, 'Combining ${segmentFiles.length} segments...');
-
-  // Read the first segment to detect audio format (sample rate, channels, etc.)
+  // Read first file to detect format
   int sampleRate = 22050;
   int channels = 1;
   int bitsPerSample = 16;
 
-  final firstFile = segmentFiles.values.first;
-  final firstBytes = await firstFile.readAsBytes();
-  if (firstBytes.length > 44) {
-    // Parse WAV header to get actual format
-    final header = ByteData.sublistView(firstBytes);
-    if (firstBytes[0] == 0x52 && firstBytes[1] == 0x49) {
-      // It's a RIFF/WAV file
-      channels = header.getUint16(22, Endian.little);
-      sampleRate = header.getUint32(24, Endian.little);
-      bitsPerSample = header.getUint16(34, Endian.little);
-    }
+  final firstBytes = await segmentFiles.values.first.readAsBytes();
+  if (firstBytes.length > 44 && firstBytes[0] == 0x52 && firstBytes[1] == 0x49) {
+    final hdr = ByteData.sublistView(firstBytes);
+    channels = hdr.getUint16(22, Endian.little);
+    sampleRate = hdr.getUint32(24, Endian.little);
+    bitsPerSample = hdr.getUint16(34, Endian.little);
   }
 
   final bytesPerMs = (sampleRate * channels * (bitsPerSample ~/ 8)) / 1000;
-
-  // Combine all segments with silence gaps
+  final blockAlign = channels * (bitsPerSample ~/ 8);
   final audioData = BytesBuilder();
-  var currentPositionMs = 0;
+  var currentMs = 0;
 
   for (int i = 0; i < entries.length; i++) {
     final entry = entries[i];
     final startMs = entry.startTime.inMilliseconds;
 
-    // Add silence before this entry
-    if (startMs > currentPositionMs) {
-      final silenceMs = startMs - currentPositionMs;
-      final silenceBytes = (silenceMs * bytesPerMs).round();
-      final aligned = silenceBytes - (silenceBytes % (bitsPerSample ~/ 8));
-      if (aligned > 0) {
-        audioData.add(Uint8List(aligned));
-      }
-      currentPositionMs = startMs;
+    // Silence before entry
+    if (startMs > currentMs) {
+      final silenceBytes = ((startMs - currentMs) * bytesPerMs).round();
+      final aligned = silenceBytes - (silenceBytes % blockAlign);
+      if (aligned > 0) audioData.add(Uint8List(aligned));
+      currentMs = startMs;
     }
 
-    // Add speech segment
-    final segmentFile = segmentFiles[i];
-    if (segmentFile != null) {
-      final segmentBytes = await segmentFile.readAsBytes();
-      if (segmentBytes.length > 44) {
-        // Find the 'data' chunk in the WAV
-        int dataOffset = 44; // default
-        for (int j = 12; j < segmentBytes.length - 8; j++) {
-          if (segmentBytes[j] == 0x64 && segmentBytes[j + 1] == 0x61 &&
-              segmentBytes[j + 2] == 0x74 && segmentBytes[j + 3] == 0x61) {
-            dataOffset = j + 8; // skip 'data' + size (4 bytes each)
-            break;
-          }
-        }
-        final audioContent = segmentBytes.sublist(dataOffset);
-        audioData.add(audioContent);
-        final addedMs = (audioContent.length / bytesPerMs).round();
-        currentPositionMs += addedMs;
+    // Add segment audio
+    final segFile = segmentFiles[i];
+    if (segFile != null) {
+      final bytes = await segFile.readAsBytes();
+      final dataOffset = _findDataChunk(bytes);
+      if (dataOffset > 0 && dataOffset < bytes.length) {
+        final audio = bytes.sublist(dataOffset);
+        audioData.add(audio);
+        currentMs += (audio.length / bytesPerMs).round();
       }
     }
 
-    // Pad to entry end time if needed
+    // Pad to end time
     final endMs = entry.endTime.inMilliseconds;
-    if (currentPositionMs < endMs) {
-      final padMs = endMs - currentPositionMs;
-      final padBytes = (padMs * bytesPerMs).round();
-      final aligned = padBytes - (padBytes % (bitsPerSample ~/ 8));
-      if (aligned > 0) {
-        audioData.add(Uint8List(aligned));
-      }
-      currentPositionMs = endMs;
+    if (currentMs < endMs) {
+      final padBytes = ((endMs - currentMs) * bytesPerMs).round();
+      final aligned = padBytes - (padBytes % blockAlign);
+      if (aligned > 0) audioData.add(Uint8List(aligned));
+      currentMs = endMs;
     }
   }
 
-  // Build final WAV
-  final rawAudio = audioData.toBytes();
-  final wavHeader = createWavHeader(
-    dataSize: rawAudio.length,
-    sampleRate: sampleRate,
-    channels: channels,
-    bitsPerSample: bitsPerSample,
-  );
+  // Write final WAV
+  final raw = audioData.toBytes();
+  final header = createWavHeader(dataSize: raw.length, sampleRate: sampleRate, channels: channels, bitsPerSample: bitsPerSample);
+  final wav = BytesBuilder();
+  wav.add(header);
+  wav.add(raw);
+  final wavBytes = wav.toBytes();
 
-  final finalWav = BytesBuilder();
-  finalWav.add(wavHeader);
-  finalWav.add(rawAudio);
-  final wavBytes = finalWav.toBytes();
-
-  // Save to Downloads on Android
+  // Save
   Directory saveDir;
   if (Platform.isAndroid) {
     saveDir = Directory('/storage/emulated/0/Download');
     if (!await saveDir.exists()) {
-      final extDir = await getExternalStorageDirectory();
-      saveDir = extDir ?? await getApplicationDocumentsDirectory();
+      saveDir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
     }
   } else {
     saveDir = await getApplicationDocumentsDirectory();
   }
 
-  final outputFileName = 'SRTVoice_$timestamp.wav';
-  final outputPath = '${saveDir.path}/$outputFileName';
-  final outputFile = File(outputPath);
-  await outputFile.writeAsBytes(wavBytes);
+  final fileName = 'SRTVoice_$timestamp.wav';
+  final outPath = '${saveDir.path}/$fileName';
+  await File(outPath).writeAsBytes(wavBytes);
 
-  // Clean up temp
-  try { await outputDir.delete(recursive: true); } catch (_) {}
-
-  final fileSizeMb = wavBytes.length / (1024 * 1024);
-  final durationSec = currentPositionMs / 1000;
-  onProgress?.call(
-    entries.length,
-    entries.length,
-    'Done! Saved: $outputFileName\n'
-    'Size: ${fileSizeMb.toStringAsFixed(1)} MB | Duration: ${durationSec.toStringAsFixed(1)}s\n'
-    'Location: ${saveDir.path}',
-  );
+  final sizeMb = wavBytes.length / (1024 * 1024);
+  final durSec = currentMs / 1000;
+  onProgress?.call(entries.length, entries.length,
+      'Done! File: $fileName\nSize: ${sizeMb.toStringAsFixed(1)} MB | Duration: ${durSec.toStringAsFixed(1)}s\nSaved to: ${saveDir.path}');
 }
 
-/// Calculate speech rate per sentence to fit within subtitle duration.
-double _calculateRate(String text, int durationMs, double baseRate) {
-  if (durationMs <= 0 || durationMs < 200) return baseRate;
+/// Fallback: speak each subtitle at correct timing (no file output).
+Future<void> _speakWithTiming(
+  List<SubtitleEntry> entries,
+  TtsService ttsService,
+  double speechRate,
+  Function(int current, int total, String status)? onProgress,
+) async {
+  final startTime = DateTime.now();
 
+  for (int i = 0; i < entries.length; i++) {
+    final entry = entries[i];
+
+    // Wait until correct start time
+    final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+    final waitMs = entry.startTime.inMilliseconds - elapsed;
+    if (waitMs > 0) await Future.delayed(Duration(milliseconds: waitMs));
+
+    // Adjust rate for this sentence
+    final entryDurationMs = entry.duration.inMilliseconds;
+    final adjustedRate = _calculateRate(entry.displayText, entryDurationMs, speechRate);
+    await ttsService.setSpeechRate(adjustedRate);
+
+    onProgress?.call(i + 1, entries.length,
+        'Speaking ${i + 1}/${entries.length} (rate: ${adjustedRate.toStringAsFixed(2)})');
+
+    await ttsService.speak(entry.displayText);
+  }
+
+  onProgress?.call(entries.length, entries.length,
+      'Playback complete! (File export not supported on this device - synthesizeToFile unavailable)');
+}
+
+/// Find the data chunk offset in a WAV file.
+int _findDataChunk(Uint8List bytes) {
+  for (int i = 12; i < bytes.length - 8; i++) {
+    if (bytes[i] == 0x64 && bytes[i + 1] == 0x61 &&
+        bytes[i + 2] == 0x74 && bytes[i + 3] == 0x61) {
+      return i + 8;
+    }
+  }
+  return 44; // fallback
+}
+
+/// Calculate rate per sentence.
+double _calculateRate(String text, int durationMs, double baseRate) {
+  if (durationMs <= 200) return baseRate;
   final charCount = text.length;
-  // At rate 0.5: roughly 7 chars/sec
-  // At rate 1.0: roughly 14 chars/sec
-  // Estimate how long it would take at base rate
   final charsPerSec = baseRate * 14.0;
   final estimatedMs = (charCount / charsPerSec) * 1000;
-
-  // Need to speed up or slow down to fit duration
-  var neededRate = baseRate * (estimatedMs / durationMs);
-
-  // Clamp to Android TTS limits
-  neededRate = neededRate.clamp(0.25, 2.5);
-  return neededRate;
+  var rate = baseRate * (estimatedMs / durationMs);
+  return rate.clamp(0.25, 2.5);
 }

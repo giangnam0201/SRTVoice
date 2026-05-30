@@ -158,6 +158,47 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _previewSpeak() async {
+    if (_subtitles.isEmpty) { _showError('Load a subtitle file first'); return; }
+    if (_selectedVoiceLanguage != null) await _ttsService.setLanguage(_selectedVoiceLanguage!);
+    if (_selectedVoice != null) await _ttsService.setVoice(_selectedVoice!);
+    await _ttsService.setPitch(_pitch);
+
+    setState(() { _isSpeaking = true; _progress = 0; _statusMessage = 'Preview: speaking with timing...'; _currentSpeakingIndex = -1; });
+
+    try {
+      final startTime = DateTime.now();
+      for (int i = 0; i < _subtitles.length; i++) {
+        if (!_isSpeaking) break;
+        final entry = _subtitles[i];
+
+        // Wait until correct start time
+        final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+        final waitMs = entry.startTime.inMilliseconds - elapsed;
+        if (waitMs > 0) await Future.delayed(Duration(milliseconds: waitMs));
+        if (!_isSpeaking) break;
+
+        // Adjust rate per sentence
+        final entryDurationMs = entry.duration.inMilliseconds;
+        final charCount = entry.displayText.length;
+        final charsPerSec = _speechRate * 14.0;
+        final estimatedMs = (charCount / charsPerSec) * 1000;
+        var rate = _speechRate * (estimatedMs / (entryDurationMs > 200 ? entryDurationMs : 1000));
+        rate = rate.clamp(0.25, 2.5);
+        await _ttsService.setSpeechRate(rate);
+
+        if (mounted) setState(() { _currentSpeakingIndex = i; _progress = (i + 1) / _subtitles.length; _statusMessage = 'Preview ${i + 1}/${_subtitles.length} (rate: ${rate.toStringAsFixed(2)})'; });
+
+        await _ttsService.speak(entry.displayText);
+      }
+      if (mounted) setState(() { _statusMessage = 'Preview complete!'; _currentSpeakingIndex = -1; _progress = 0; });
+    } catch (e) {
+      _showError('Preview error: $e');
+    } finally {
+      if (mounted) setState(() => _isSpeaking = false);
+    }
+  }
+
   void _stopSpeaking() {
     _ttsService.stop();
     setState(() { _isSpeaking = false; _isGenerating = false; _currentSpeakingIndex = -1; _statusMessage = 'Stopped'; _progress = 0; });
@@ -304,17 +345,24 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 16),
         Row(children: [
           Expanded(child: ElevatedButton.icon(
-            onPressed: (_isGenerating || _subtitles.isEmpty) ? null : _generateAudio,
+            onPressed: (_isGenerating || _isSpeaking || _subtitles.isEmpty) ? null : _generateAudio,
             icon: Icon(kIsWeb ? Icons.play_arrow : Icons.download),
-            label: Text(kIsWeb ? 'Play with Timing' : 'Generate WAV File'),
+            label: Text(kIsWeb ? 'Play with Timing' : 'Generate WAV'),
             style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), backgroundColor: Theme.of(context).colorScheme.primary, foregroundColor: Theme.of(context).colorScheme.onPrimary),
           )),
-          if (_isSpeaking) ...[
-            const SizedBox(width: 8),
-            ElevatedButton.icon(onPressed: _stopSpeaking, icon: const Icon(Icons.stop), label: const Text('Stop'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14))),
-          ],
+          const SizedBox(width: 8),
+          Expanded(child: ElevatedButton.icon(
+            onPressed: (_isGenerating || _isSpeaking || _subtitles.isEmpty) ? null : _previewSpeak,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Preview'),
+            style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+          )),
         ]),
+        if (_isSpeaking || _isGenerating) ...[
+          const SizedBox(height: 8),
+          SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: _stopSpeaking, icon: const Icon(Icons.stop), label: const Text('Stop'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)))),
+        ],
       ])),
     );
   }
