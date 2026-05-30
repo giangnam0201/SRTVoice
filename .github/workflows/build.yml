@@ -68,13 +68,20 @@ jobs:
         run: |
           flutter create --project-name srt_voice --org com.srtvoice --platforms android .
 
-      - name: Update Kotlin version for compatibility
+      - name: Update Kotlin version and compileSdk
         run: |
-          sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
-
-      - name: Update compileSdk for plugin compatibility
-        run: |
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
+          # Handle both .gradle and .gradle.kts formats
+          if [ -f android/settings.gradle.kts ]; then
+            sed -i 's/id("org.jetbrains.kotlin.android") version "[^"]*"/id("org.jetbrains.kotlin.android") version "2.1.0"/' android/settings.gradle.kts
+          elif [ -f android/settings.gradle ]; then
+            sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
+          fi
+          # Update compileSdk
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          elif [ -f android/app/build.gradle ]; then
+            sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
+          fi
 
       - name: Get dependencies
         run: flutter pub get
@@ -140,10 +147,11 @@ jobs:
             ### Features:
             - Load .srt subtitle files
             - Translate subtitles between 30+ languages using MyMemory API
-            - Choose voice language and voice type
-            - Adjust speech rate and pitch
-            - Generate speech with exact subtitle timing
+            - Choose voice language and voice type from device's available voices
+            - Adjust speech rate to match subtitle timing exactly
+            - Generate MP3/WAV with correct subtitle timing
             - Multi-platform: Web, Android, Windows
+            - Multi-threaded batch processing for fast generation
 
             ### Downloads:
             - **Web**: srt-voice-web.zip (deploy to any web server)
