@@ -17,7 +17,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.29.3'
           channel: 'stable'
 
       - name: Generate platform files
@@ -61,12 +61,20 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.29.3'
           channel: 'stable'
 
       - name: Generate platform files
         run: |
           flutter create --project-name srt_voice --org com.srtvoice --platforms android .
+
+      - name: Update Kotlin version for compatibility
+        run: |
+          sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
+
+      - name: Update compileSdk for plugin compatibility
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle
 
       - name: Get dependencies
         run: flutter pub get
@@ -87,7 +95,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.29.3'
           channel: 'stable'
 
       - name: Generate platform files
