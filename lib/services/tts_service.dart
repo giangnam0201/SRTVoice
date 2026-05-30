@@ -120,21 +120,9 @@ class TtsService {
     } catch (_) {}
   }
 
-  /// Synthesize to file. Waits for the TTS engine to finish writing.
+  /// Synthesize to file - DEPRECATED, use record approach instead.
   Future<int> synthesizeToFile(String text, String filePath) async {
-    if (kIsWeb) return 0;
-    _speakCompleter = Completer<void>();
-    try {
-      final result = await _flutterTts.synthesizeToFile(text, filePath);
-      if (result == 1) {
-        // Wait for TTS completion callback
-        await _speakCompleter?.future.timeout(const Duration(seconds: 30));
-        return 1;
-      }
-    } catch (e) {
-      print('synthesizeToFile error: $e');
-    }
-    return 0;
+    return 0; // Not used anymore
   }
 
   Future<void> stop() async {
