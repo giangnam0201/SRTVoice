@@ -6,8 +6,9 @@ import '../models/subtitle_entry.dart';
 import 'tts_service.dart';
 import 'audio_export_service.dart';
 
-/// Web implementation: Uses Web Speech API to speak subtitles at correct timing
-/// and records the output via MediaRecorder for download.
+/// Web implementation: Speaks each subtitle at correct timing using Web Speech API.
+/// Adjusts speech rate per sentence to match subtitle duration.
+/// On web we cannot export to file, so we just play with correct timing.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -15,16 +16,13 @@ Future<void> generatePlatformAudio(
   int totalDurationMs,
   Function(int current, int total, String status)? onProgress,
 ) async {
-  onProgress?.call(0, entries.length, 'Generating audio (Web Speech API)...');
+  onProgress?.call(0, entries.length, 'Playing with subtitle timing (Web)...');
 
   final synth = web.window.speechSynthesis;
-
-  // Speak each entry at correct timing, recording via MediaRecorder
   final startTime = DateTime.now();
 
   for (int i = 0; i < entries.length; i++) {
     final entry = entries[i];
-    onProgress?.call(i + 1, entries.length, 'Speaking entry ${i + 1}/${entries.length}...');
 
     // Wait until correct start time
     final elapsed = DateTime.now().difference(startTime).inMilliseconds;
@@ -33,53 +31,49 @@ Future<void> generatePlatformAudio(
       await Future.delayed(Duration(milliseconds: waitMs));
     }
 
-    // Calculate rate to fit within subtitle duration
-    final entryDurationMs = entry.duration.inMilliseconds;
-    final adjustedRate = _calculateWebRate(entry.displayText.length, entryDurationMs, speechRate);
+    onProgress?.call(i + 1, entries.length, 'Speaking ${i + 1}/${entries.length}...');
 
-    // Create and speak utterance
+    // Calculate rate for THIS sentence to fit its duration
+    final entryDurationMs = entry.duration.inMilliseconds;
+    final adjustedRate = _calculateWebRate(entry.displayText, entryDurationMs, speechRate);
+
+    // Speak
     final utterance = web.SpeechSynthesisUtterance(entry.displayText);
     utterance.rate = adjustedRate;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
-    final speakCompleter = Completer<void>();
+    final completer = Completer<void>();
     utterance.onend = ((web.Event e) {
-      if (!speakCompleter.isCompleted) speakCompleter.complete();
+      if (!completer.isCompleted) completer.complete();
     }).toJS;
     utterance.onerror = ((web.Event e) {
-      if (!speakCompleter.isCompleted) speakCompleter.complete();
+      if (!completer.isCompleted) completer.complete();
     }).toJS;
 
     synth.speak(utterance);
 
-    // Wait for speech or timeout
     try {
-      await speakCompleter.future.timeout(
-        Duration(milliseconds: entryDurationMs + 2000),
-      );
+      await completer.future.timeout(Duration(milliseconds: entryDurationMs + 3000));
     } catch (_) {
       synth.cancel();
     }
   }
 
-  // On web, we can't easily capture TTS output to a file.
-  // Instead, generate a WAV with silence matching the timing as a template,
-  // and let users know the audio was played with correct timing.
   onProgress?.call(entries.length, entries.length,
-      'Audio playback complete! (Web limitation: TTS cannot be exported to MP3 directly. '
-      'Use Android/Windows build for MP3 file export.)');
+      'Playback complete! (Web cannot export to MP3 file - use Android/Windows for file export)');
 }
 
-double _calculateWebRate(int textLength, int durationMs, double baseRate) {
-  if (durationMs <= 0) return baseRate;
+/// Calculate speech rate for a specific sentence on web.
+double _calculateWebRate(String text, int durationMs, double baseRate) {
+  if (durationMs <= 0) return 1.0;
 
-  // Rough estimate: at rate 1.0, ~13 chars/sec for English
-  final charsPerSecAtRate1 = 13.0;
-  final estimatedDurationMs = (textLength / charsPerSecAtRate1) * 1000;
-
-  var rate = estimatedDurationMs / durationMs;
   // Web Speech API rate: 0.1 to 10.0, default 1.0
-  rate = rate.clamp(0.5, 3.0);
+  // At rate 1.0, roughly ~13 chars/sec for English
+  final charCount = text.length;
+  final estimatedMsAtRate1 = (charCount / 13.0) * 1000;
+
+  var rate = estimatedMsAtRate1 / durationMs;
+  rate = rate.clamp(0.5, 4.0);
   return rate;
 }

@@ -9,48 +9,91 @@ class TtsService {
 
   Future<void> initialize() async {
     if (_isInitialized) return;
-    
+
     if (!kIsWeb) {
       await _flutterTts.setSharedInstance(true);
     }
-    
+
     await _flutterTts.awaitSpeakCompletion(true);
     await _flutterTts.setVolume(1.0);
     await _flutterTts.setPitch(1.0);
     await _flutterTts.setSpeechRate(0.5);
 
     _flutterTts.setCompletionHandler(() {
-      _speakCompleter?.complete();
+      if (_speakCompleter != null && !_speakCompleter!.isCompleted) {
+        _speakCompleter!.complete();
+      }
       _speakCompleter = null;
     });
 
     _flutterTts.setErrorHandler((msg) {
-      _speakCompleter?.completeError(Exception('TTS Error: $msg'));
+      if (_speakCompleter != null && !_speakCompleter!.isCompleted) {
+        _speakCompleter!.completeError(Exception('TTS Error: $msg'));
+      }
       _speakCompleter = null;
     });
 
     _isInitialized = true;
   }
 
+  /// Get voices filtered and formatted nicely.
+  /// Returns list of maps with 'name' and 'locale' keys.
   Future<List<Map<String, String>>> getVoices() async {
     try {
       final voices = await _flutterTts.getVoices;
       if (voices != null && voices is List) {
-        return List<Map<String, String>>.from(
-          voices.map((v) {
-            if (v is Map) {
-              return Map<String, String>.from(
-                v.map((key, value) => MapEntry(key.toString(), value.toString())),
-              );
+        final result = <Map<String, String>>[];
+        for (final v in voices) {
+          if (v is Map) {
+            final name = (v['name'] ?? v['Name'] ?? '').toString();
+            final locale = (v['locale'] ?? v['Locale'] ?? '').toString();
+            if (name.isNotEmpty && locale.isNotEmpty) {
+              result.add({'name': name, 'locale': locale});
             }
-            return <String, String>{};
-          }),
-        ).where((v) => v.isNotEmpty).toList();
+          }
+        }
+        // Sort by locale then by name
+        result.sort((a, b) {
+          final localeCompare = a['locale']!.compareTo(b['locale']!);
+          if (localeCompare != 0) return localeCompare;
+          return a['name']!.compareTo(b['name']!);
+        });
+        return result;
       }
     } catch (e) {
       print('Error getting voices: $e');
     }
     return [];
+  }
+
+  /// Get voices filtered by a specific language code.
+  List<Map<String, String>> filterVoicesByLanguage(
+    List<Map<String, String>> allVoices,
+    String languageCode,
+  ) {
+    return allVoices.where((voice) {
+      final locale = voice['locale'] ?? '';
+      return locale.toLowerCase().startsWith(languageCode.toLowerCase());
+    }).toList();
+  }
+
+  /// Get a readable display name for a voice.
+  String getVoiceDisplayName(Map<String, String> voice) {
+    final name = voice['name'] ?? '';
+    final locale = voice['locale'] ?? '';
+    // Clean up the name - remove package prefixes
+    String displayName = name;
+    if (displayName.contains('#')) {
+      displayName = displayName.split('#').last;
+    }
+    if (displayName.contains('.')) {
+      displayName = displayName.split('.').last;
+    }
+    // Capitalize
+    if (displayName.isNotEmpty) {
+      displayName = displayName[0].toUpperCase() + displayName.substring(1);
+    }
+    return '$displayName ($locale)';
   }
 
   Future<List<String>> getLanguages() async {
@@ -92,34 +135,45 @@ class TtsService {
     _speakCompleter = Completer<void>();
     final result = await _flutterTts.speak(text);
     if (result != 1) {
-      _speakCompleter?.complete();
+      if (_speakCompleter != null && !_speakCompleter!.isCompleted) {
+        _speakCompleter!.complete();
+      }
       _speakCompleter = null;
       return;
     }
     try {
       await _speakCompleter?.future.timeout(const Duration(seconds: 60));
     } catch (e) {
-      // Timeout or error, continue
+      // Timeout, continue
     }
   }
 
-  /// Synthesize text to a file (Android/Windows/iOS only, not web).
-  /// Returns the file name used.
-  Future<String?> synthesizeToFile(String text, String fileName) async {
-    if (kIsWeb) return null;
+  /// Synthesize text to a WAV file (Android/Windows only).
+  /// Returns 1 on success.
+  Future<int> synthesizeToFile(String text, String filePath) async {
+    if (kIsWeb) return 0;
     try {
-      final result = await _flutterTts.synthesizeToFile(text, fileName);
-      if (result == 1) return fileName;
+      _speakCompleter = Completer<void>();
+      final result = await _flutterTts.synthesizeToFile(text, filePath);
+      if (result == 1) {
+        // Wait for completion
+        try {
+          await _speakCompleter?.future.timeout(const Duration(seconds: 60));
+        } catch (_) {}
+        return 1;
+      }
     } catch (e) {
       print('Error synthesizing to file: $e');
     }
-    return null;
+    return 0;
   }
 
   /// Stop speaking.
   Future<void> stop() async {
     await _flutterTts.stop();
-    _speakCompleter?.complete();
+    if (_speakCompleter != null && !_speakCompleter!.isCompleted) {
+      _speakCompleter!.complete();
+    }
     _speakCompleter = null;
   }
 
