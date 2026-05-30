@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/subtitle_entry.dart';
@@ -6,6 +8,7 @@ import '../models/language.dart';
 import '../services/srt_parser.dart';
 import '../services/translation_service.dart';
 import '../services/tts_service.dart';
+import '../services/audio_export_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -86,7 +89,7 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             _subtitles = subtitles;
             _fileName = file.name;
-            _statusMessage = 'Loaded ${subtitles.length} subtitle entries';
+            _statusMessage = 'Loaded ${subtitles.length} subtitle entries from ${file.name}';
           });
         }
       }
@@ -129,7 +132,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (mounted) {
         setState(() {
-          _statusMessage = 'Translation complete!';
+          _statusMessage = 'Translation complete! All ${_subtitles.length} entries translated.';
+          _progress = 0.0;
         });
       }
     } catch (e) {
@@ -143,7 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _generateAndSpeak() async {
+  Future<void> _generateMp3() async {
     if (_subtitles.isEmpty) {
       _showError('Please load a subtitle file first');
       return;
@@ -161,7 +165,66 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isGenerating = true;
       _isSpeaking = true;
-      _statusMessage = 'Speaking subtitles with timing...';
+      _progress = 0.0;
+      _statusMessage = 'Generating audio with correct timing...';
+      _currentSpeakingIndex = -1;
+    });
+
+    try {
+      // Use AudioExportService to generate a WAV with correct timing
+      final exportService = AudioExportService(ttsService: _ttsService);
+      
+      await exportService.generateAndExport(
+        _subtitles,
+        speechRate: _speechRate,
+        onProgress: (current, total, status) {
+          if (mounted) {
+            setState(() {
+              _currentSpeakingIndex = current - 1;
+              _progress = current / total;
+              _statusMessage = status;
+            });
+          }
+        },
+      );
+
+      if (mounted) {
+        setState(() {
+          _statusMessage = 'MP3 generation complete! File saved/downloaded.';
+          _currentSpeakingIndex = -1;
+          _progress = 0.0;
+        });
+      }
+    } catch (e) {
+      _showError('Error generating audio: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+          _isSpeaking = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _previewSpeak() async {
+    if (_subtitles.isEmpty) {
+      _showError('Please load a subtitle file first');
+      return;
+    }
+
+    if (_selectedVoiceLanguage != null) {
+      await _ttsService.setLanguage(_selectedVoiceLanguage!);
+    }
+    if (_selectedVoice != null) {
+      await _ttsService.setVoice(_selectedVoice!);
+    }
+    await _ttsService.setSpeechRate(_speechRate);
+    await _ttsService.setPitch(_pitch);
+
+    setState(() {
+      _isSpeaking = true;
+      _statusMessage = 'Preview: Speaking with subtitle timing...';
       _currentSpeakingIndex = -1;
     });
 
@@ -171,11 +234,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final entry = _subtitles[i];
 
-        // Calculate wait time to match subtitle timing
+        // Wait until start time
         if (i == 0) {
-          final waitTime = entry.startTime;
-          if (waitTime > Duration.zero) {
-            await Future.delayed(waitTime);
+          if (entry.startTime > Duration.zero) {
+            await Future.delayed(entry.startTime);
           }
         } else {
           final gap = entry.startTime - _subtitles[i - 1].endTime;
@@ -189,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           setState(() {
             _currentSpeakingIndex = i;
-            _statusMessage = 'Speaking entry ${i + 1}/${_subtitles.length}';
+            _statusMessage = 'Speaking ${i + 1}/${_subtitles.length}: "${entry.displayText}"';
             _progress = (i + 1) / _subtitles.length;
           });
         }
@@ -199,16 +261,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (mounted) {
         setState(() {
-          _statusMessage = 'Playback complete!';
+          _statusMessage = 'Preview complete!';
           _currentSpeakingIndex = -1;
+          _progress = 0.0;
         });
       }
     } catch (e) {
-      _showError('Error during speech: $e');
+      _showError('Error during preview: $e');
     } finally {
       if (mounted) {
         setState(() {
-          _isGenerating = false;
           _isSpeaking = false;
         });
       }
@@ -222,6 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _isGenerating = false;
       _currentSpeakingIndex = -1;
       _statusMessage = 'Stopped';
+      _progress = 0.0;
     });
   }
 
@@ -246,7 +309,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SRT Voice'),
+        title: const Text('SRT Voice - Subtitle to MP3'),
         centerTitle: true,
         elevation: 2,
       ),
@@ -279,26 +342,40 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Subtitle File',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                const Icon(Icons.subtitles, size: 24),
+                const SizedBox(width: 8),
+                const Text(
+                  '1. Load Subtitle File (.SRT)',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: Text(
-                    _fileName ?? 'No file selected',
-                    style: TextStyle(
-                      color: _fileName != null ? null : Colors.grey,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    overflow: TextOverflow.ellipsis,
+                    child: Text(
+                      _fileName ?? 'No file selected',
+                      style: TextStyle(
+                        color: _fileName != null ? null : Colors.grey,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
+                const SizedBox(width: 12),
                 ElevatedButton.icon(
                   onPressed: _pickFile,
                   icon: const Icon(Icons.file_upload),
-                  label: const Text('Pick .SRT File'),
+                  label: const Text('Pick .SRT'),
                 ),
               ],
             ),
@@ -306,8 +383,8 @@ class _HomeScreenState extends State<HomeScreen> {
               Padding(
                 padding: const EdgeInsets.only(top: 8.0),
                 child: Text(
-                  '${_subtitles.length} entries loaded',
-                  style: const TextStyle(color: Colors.green),
+                  '${_subtitles.length} entries loaded | Total duration: ${SrtParser.formatTimestamp(_subtitles.last.endTime)}',
+                  style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w500),
                 ),
               ),
           ],
@@ -323,39 +400,41 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Translation',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                const Icon(Icons.translate, size: 24),
+                const SizedBox(width: 8),
+                const Text(
+                  '2. Translation (Optional)',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
             const SizedBox(height: 4),
             const Text(
-              'Using MyMemory Translation API (free)',
+              'Select what language your SRT file is in, and what language you want it translated to.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: DropdownButtonFormField<Language>(
                     value: _sourceLanguage,
                     decoration: const InputDecoration(
-                      labelText: 'Source Language',
+                      labelText: 'SRT File Language',
                       border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
+                    isExpanded: true,
                     items: supportedLanguages
                         .map((lang) => DropdownMenuItem(
                               value: lang,
-                              child: Text(lang.name),
+                              child: Text(lang.name, overflow: TextOverflow.ellipsis),
                             ))
                         .toList(),
                     onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _sourceLanguage = value);
-                      }
+                      if (value != null) setState(() => _sourceLanguage = value);
                     },
                   ),
                 ),
@@ -367,23 +446,19 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: DropdownButtonFormField<Language>(
                     value: _targetLanguage,
                     decoration: const InputDecoration(
-                      labelText: 'Target Language',
+                      labelText: 'Translate To',
                       border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
+                    isExpanded: true,
                     items: supportedLanguages
                         .map((lang) => DropdownMenuItem(
                               value: lang,
-                              child: Text(lang.name),
+                              child: Text(lang.name, overflow: TextOverflow.ellipsis),
                             ))
                         .toList(),
                     onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _targetLanguage = value);
-                      }
+                      if (value != null) setState(() => _targetLanguage = value);
                     },
                   ),
                 ),
@@ -393,15 +468,11 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _isTranslating ? null : _translateSubtitles,
+                onPressed: (_isTranslating || _subtitles.isEmpty) ? null : _translateSubtitles,
                 icon: _isTranslating
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.translate),
-                label: Text(_isTranslating ? 'Translating...' : 'Translate'),
+                label: Text(_isTranslating ? 'Translating...' : 'Translate Subtitles'),
               ),
             ),
           ],
@@ -417,27 +488,33 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Voice Settings',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                const Icon(Icons.record_voice_over, size: 24),
+                const SizedBox(width: 8),
+                const Text(
+                  '3. Choose Voice',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
+            const Text(
+              'Select a voice language and specific voice from the list below.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
             if (_availableLanguages.isNotEmpty)
               DropdownButtonFormField<String>(
                 value: _selectedVoiceLanguage,
                 decoration: const InputDecoration(
                   labelText: 'Voice Language',
                   border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
+                isExpanded: true,
                 items: _availableLanguages
-                    .map((lang) => DropdownMenuItem(
-                          value: lang,
-                          child: Text(lang),
-                        ))
+                    .map((lang) => DropdownMenuItem(value: lang, child: Text(lang)))
                     .toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -445,29 +522,27 @@ class _HomeScreenState extends State<HomeScreen> {
                     _ttsService.setLanguage(value);
                   }
                 },
-              ),
+              )
+            else
+              const Text('Loading voices...', style: TextStyle(color: Colors.orange)),
             const SizedBox(height: 12),
             if (_availableVoices.isNotEmpty)
               DropdownButtonFormField<Map<String, String>>(
                 value: _selectedVoice,
                 decoration: const InputDecoration(
-                  labelText: 'Voice',
+                  labelText: 'Select Voice',
                   border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
                 isExpanded: true,
-                items: _availableVoices
-                    .map((voice) => DropdownMenuItem(
-                          value: voice,
-                          child: Text(
-                            voice['name'] ?? voice.toString(),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ))
-                    .toList(),
+                items: _availableVoices.map((voice) {
+                  final name = voice['name'] ?? voice['locale'] ?? voice.toString();
+                  final locale = voice['locale'] ?? '';
+                  return DropdownMenuItem(
+                    value: voice,
+                    child: Text('$name ($locale)', overflow: TextOverflow.ellipsis),
+                  );
+                }).toList(),
                 onChanged: (value) {
                   if (value != null) {
                     setState(() => _selectedVoice = value);
@@ -475,31 +550,26 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
                 },
               ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             Row(
               children: [
-                const SizedBox(width: 60, child: Text('Speed:')),
+                const SizedBox(width: 80, child: Text('Speed:', style: TextStyle(fontWeight: FontWeight.w500))),
                 Expanded(
                   child: Slider(
                     value: _speechRate,
                     min: 0.1,
                     max: 1.0,
-                    divisions: 9,
-                    label: _speechRate.toStringAsFixed(1),
-                    onChanged: (value) {
-                      setState(() => _speechRate = value);
-                    },
+                    divisions: 18,
+                    label: '${(_speechRate * 100).round()}%',
+                    onChanged: (value) => setState(() => _speechRate = value),
                   ),
                 ),
-                SizedBox(
-                  width: 30,
-                  child: Text(_speechRate.toStringAsFixed(1)),
-                ),
+                SizedBox(width: 45, child: Text('${(_speechRate * 100).round()}%')),
               ],
             ),
             Row(
               children: [
-                const SizedBox(width: 60, child: Text('Pitch:')),
+                const SizedBox(width: 80, child: Text('Pitch:', style: TextStyle(fontWeight: FontWeight.w500))),
                 Expanded(
                   child: Slider(
                     value: _pitch,
@@ -507,15 +577,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     max: 2.0,
                     divisions: 15,
                     label: _pitch.toStringAsFixed(1),
-                    onChanged: (value) {
-                      setState(() => _pitch = value);
-                    },
+                    onChanged: (value) => setState(() => _pitch = value),
                   ),
                 ),
-                SizedBox(
-                  width: 30,
-                  child: Text(_pitch.toStringAsFixed(1)),
-                ),
+                SizedBox(width: 45, child: Text(_pitch.toStringAsFixed(1))),
               ],
             ),
           ],
@@ -526,51 +591,77 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildControlsSection() {
     return Card(
+      color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Generate Audio',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                const Icon(Icons.audiotrack, size: 24),
+                const SizedBox(width: 8),
+                const Text(
+                  '4. Generate MP3',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             const Text(
-              'Speaks each subtitle entry at the exact timing specified in the SRT file '
-              'using the device\'s text-to-speech engine.',
-              style: TextStyle(color: Colors.grey, fontSize: 13),
+              'Generates an MP3/WAV file where each subtitle is spoken at the EXACT timing from the SRT file. '
+              'The voice speed is adjusted to fit each subtitle\'s duration perfectly.',
+              style: TextStyle(fontSize: 13),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             Row(
               children: [
                 Expanded(
+                  flex: 2,
                   child: ElevatedButton.icon(
-                    onPressed: (_isGenerating || _subtitles.isEmpty)
+                    onPressed: (_isGenerating || _isSpeaking || _subtitles.isEmpty)
                         ? null
-                        : _generateAndSpeak,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Generate & Play'),
+                        : _generateMp3,
+                    icon: const Icon(Icons.download),
+                    label: const Text('Generate & Download MP3'),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: Theme.of(context).colorScheme.primary,
+                      foregroundColor: Theme.of(context).colorScheme.onPrimary,
                     ),
                   ),
                 ),
-                if (_isSpeaking) ...[
-                  const SizedBox(width: 8),
-                  ElevatedButton.icon(
-                    onPressed: _stopSpeaking,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('Stop'),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: (_isGenerating || _isSpeaking || _subtitles.isEmpty)
+                        ? null
+                        : _previewSpeak,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Preview'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
                     ),
                   ),
-                ],
+                ),
               ],
             ),
+            if (_isSpeaking || _isGenerating) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _stopSpeaking,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -578,26 +669,42 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildStatusSection() {
+    if (_statusMessage.isEmpty && _progress == 0) return const SizedBox.shrink();
+    
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Status',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (_statusMessage.isNotEmpty)
-              Text(
-                _statusMessage,
-                style: TextStyle(
+            Row(
+              children: [
+                Icon(
+                  _statusMessage.toLowerCase().contains('error')
+                      ? Icons.error
+                      : _statusMessage.toLowerCase().contains('complete')
+                          ? Icons.check_circle
+                          : Icons.info,
                   color: _statusMessage.toLowerCase().contains('error')
                       ? Colors.red
-                      : Colors.green,
+                      : _statusMessage.toLowerCase().contains('complete')
+                          ? Colors.green
+                          : Colors.blue,
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _statusMessage,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: _statusMessage.toLowerCase().contains('error')
+                          ? Colors.red
+                          : null,
+                    ),
+                  ),
+                ),
+              ],
+            ),
             if (_progress > 0 && _progress < 1.0) ...[
               const SizedBox(height: 8),
               LinearProgressIndicator(value: _progress),
@@ -656,13 +763,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         entry.displayText,
                         style: TextStyle(
                           fontSize: 13,
-                          fontWeight: isCurrentlySpeaking
-                              ? FontWeight.bold
-                              : FontWeight.normal,
+                          fontWeight: isCurrentlySpeaking ? FontWeight.bold : FontWeight.normal,
                         ),
                       ),
                       subtitle: Text(
-                        '${SrtParser.formatTimestamp(entry.startTime)} --> ${SrtParser.formatTimestamp(entry.endTime)}',
+                        '${SrtParser.formatTimestamp(entry.startTime)} --> ${SrtParser.formatTimestamp(entry.endTime)} (${entry.duration.inMilliseconds}ms)',
                         style: const TextStyle(fontSize: 11),
                       ),
                     ),
