@@ -339,15 +339,15 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 8),
         Text(
           kIsWeb
-            ? 'Web: Plays audio with correct timing (cannot save to file on web).\nUse Android APK or Windows for actual file export.'
-            : 'Generates a WAV file with each subtitle spoken at the EXACT timing.\nVoice speed is adjusted PER SENTENCE to fit subtitle duration.',
+            ? 'Downloads MP3 file with each subtitle spoken at correct timing.\nUses free TTS API - no account needed.'
+            : 'Generates an MP3 file with each subtitle spoken at the EXACT timing.\nUses free Google Translate TTS API - no account needed.\nVoice speed matches subtitle duration.',
           style: const TextStyle(fontSize: 12, color: Colors.grey)),
         const SizedBox(height: 16),
         Row(children: [
           Expanded(child: ElevatedButton.icon(
             onPressed: (_isGenerating || _isSpeaking || _subtitles.isEmpty) ? null : _generateAudio,
-            icon: Icon(kIsWeb ? Icons.play_arrow : Icons.download),
-            label: Text(kIsWeb ? 'Play with Timing' : 'Generate WAV'),
+            icon: Icon(kIsWeb ? Icons.download : Icons.download),
+            label: Text(kIsWeb ? 'Download MP3' : 'Generate MP3'),
             style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), backgroundColor: Theme.of(context).colorScheme.primary, foregroundColor: Theme.of(context).colorScheme.onPrimary),
           )),
           const SizedBox(width: 8),

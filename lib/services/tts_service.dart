@@ -101,7 +101,12 @@ class TtsService {
     return [];
   }
 
-  Future<void> setLanguage(String language) async => await _flutterTts.setLanguage(language);
+  String? currentLanguage;
+
+  Future<void> setLanguage(String language) async {
+    currentLanguage = language.split('-').first;
+    await _flutterTts.setLanguage(language);
+  }
   Future<void> setVoice(Map<String, String> voice) async => await _flutterTts.setVoice(voice);
   Future<void> setSpeechRate(double rate) async => await _flutterTts.setSpeechRate(rate);
   Future<void> setPitch(double pitch) async => await _flutterTts.setPitch(pitch);
@@ -120,9 +125,9 @@ class TtsService {
     } catch (_) {}
   }
 
-  /// Synthesize to file - DEPRECATED, use record approach instead.
+  /// Synthesize to file - not used, we use TTS API now.
   Future<int> synthesizeToFile(String text, String filePath) async {
-    return 0; // Not used anymore
+    return 0;
   }
 
   Future<void> stop() async {
