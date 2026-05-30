@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 jobs:
   build-web:
@@ -28,7 +29,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Web
-        run: flutter build web --release
+        run: flutter build web --release --base-href "/SRTVoice/"
 
       - name: Archive web build
         run: |
@@ -40,6 +41,13 @@ jobs:
         with:
           name: web-build
           path: srt-voice-web.zip
+
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build/web
+          publish_branch: gh-pages
 
   build-android:
     runs-on: ubuntu-latest
@@ -133,6 +141,9 @@ jobs:
             - **Web**: srt-voice-web.zip (deploy to any web server)
             - **Android**: app-release.apk (install directly on Android)
             - **Windows**: srt-voice-windows.zip (extract and run)
+
+            ### Web App (GitHub Pages):
+            https://giangnam0201.github.io/SRTVoice/
           files: |
             artifacts/web-build/srt-voice-web.zip
             artifacts/android-build/app-release.apk
