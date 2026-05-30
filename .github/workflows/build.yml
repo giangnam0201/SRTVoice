@@ -19,12 +19,10 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Create Flutter project scaffold
+      - name: Generate platform files
         run: |
-          flutter create --project-name srt_voice --org com.srtvoice --platforms web,android,windows temp_project
-          cp -r temp_project/web/* web/ 2>/dev/null || true
-          cp temp_project/web/favicon.png web/favicon.png 2>/dev/null || true
-          rm -rf temp_project
+          rm -rf web
+          flutter create --project-name srt_voice --org com.srtvoice --platforms web .
 
       - name: Get dependencies
         run: flutter pub get
@@ -58,12 +56,9 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Create Flutter project scaffold for Android
+      - name: Generate platform files
         run: |
-          flutter create --project-name srt_voice --org com.srtvoice --platforms android temp_project
-          rm -rf android
-          cp -r temp_project/android .
-          rm -rf temp_project
+          flutter create --project-name srt_voice --org com.srtvoice --platforms android .
 
       - name: Get dependencies
         run: flutter pub get
@@ -87,12 +82,8 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Create Flutter project scaffold for Windows
-        run: |
-          flutter create --project-name srt_voice --org com.srtvoice --platforms windows temp_project
-          Remove-Item -Recurse -Force windows -ErrorAction SilentlyContinue
-          Copy-Item -Recurse temp_project/windows .
-          Remove-Item -Recurse -Force temp_project
+      - name: Generate platform files
+        run: flutter create --project-name srt_voice --org com.srtvoice --platforms windows .
 
       - name: Get dependencies
         run: flutter pub get
