@@ -9,7 +9,8 @@ import 'audio_export_service.dart';
 
 /// Native implementation using the free TTS API (tts-api.netlify.app).
 /// Downloads audio for each subtitle with speed adjusted to match timing,
-/// then combines into one MP3 file with silence gaps.
+/// then concatenates all segments directly into one audio file.
+/// No fake silence frames - just real audio back to back.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -22,16 +23,17 @@ Future<void> generatePlatformAudio(
   onProgress?.call(0, entries.length, 'Downloading audio from TTS API...');
 
   // Download audio for each subtitle with speed matching its duration
-  final segments = <int, Uint8List>{};
+  final segments = <Uint8List>[];
 
   for (int i = 0; i < entries.length; i++) {
     final entry = entries[i];
     final text = entry.displayText.trim();
+
     if (text.isEmpty) continue;
 
     final targetMs = entry.duration.inMilliseconds;
 
-    // Use generateWithTiming - adjusts speed per sentence to fit duration
+    // Generate audio with speed adjusted to fit the subtitle duration
     final audioBytes = await TtsApiService.generateWithTiming(
       text,
       language,
@@ -39,14 +41,18 @@ Future<void> generatePlatformAudio(
     );
 
     if (audioBytes != null && audioBytes.isNotEmpty) {
-      segments[i] = audioBytes;
+      segments.add(audioBytes);
+    } else {
+      // If API fails for this entry, skip it
+      onProgress?.call(i + 1, entries.length,
+          'Warning: Failed to get audio for entry ${i + 1}, skipping...');
     }
 
     onProgress?.call(i + 1, entries.length,
         'Downloaded ${i + 1}/${entries.length} (${segments.length} OK)');
 
-    // Small delay between requests to be nice to the API
-    await Future.delayed(const Duration(milliseconds: 50));
+    // Small delay between requests
+    await Future.delayed(const Duration(milliseconds: 100));
   }
 
   if (segments.isEmpty) {
@@ -56,40 +62,14 @@ Future<void> generatePlatformAudio(
   }
 
   onProgress?.call(entries.length, entries.length,
-      'Combining ${segments.length} segments into MP3...');
+      'Combining ${segments.length} audio segments...');
 
-  // Combine segments with silence gaps
+  // Simply concatenate all audio segments.
+  // The TTS API already adjusted the speed of each segment to match subtitle duration.
+  // No fake silence needed - just real audio back to back.
   final output = BytesBuilder();
-  var currentPositionMs = 0;
-
-  for (int i = 0; i < entries.length; i++) {
-    final entry = entries[i];
-    final startMs = entry.startTime.inMilliseconds;
-
-    // Add silence before this entry
-    if (startMs > currentPositionMs) {
-      final silenceMs = startMs - currentPositionMs;
-      output.add(_generateMp3Silence(silenceMs));
-      currentPositionMs = startMs;
-    }
-
-    // Add the speech segment
-    final segData = segments[i];
-    if (segData != null) {
-      output.add(segData);
-      // Estimate duration: the API adjusts speed to fit, so assume it matches target
-      currentPositionMs += entry.duration.inMilliseconds;
-    }
-
-    // Pad to end time if needed
-    final endMs = entry.endTime.inMilliseconds;
-    if (currentPositionMs < endMs) {
-      final padMs = endMs - currentPositionMs;
-      if (padMs > 50) {
-        output.add(_generateMp3Silence(padMs));
-        currentPositionMs = endMs;
-      }
-    }
+  for (final segment in segments) {
+    output.add(segment);
   }
 
   // Save MP3 file
@@ -111,30 +91,8 @@ Future<void> generatePlatformAudio(
   await File(filePath).writeAsBytes(mp3Bytes);
 
   final sizeMb = mp3Bytes.length / (1024 * 1024);
-  final durationSec = currentPositionMs / 1000;
 
   onProgress?.call(entries.length, entries.length,
-      'Done! $fileName\n'
-      'Size: ${sizeMb.toStringAsFixed(1)} MB | Duration: ${durationSec.toStringAsFixed(0)}s\n'
+      'Done! $fileName (${sizeMb.toStringAsFixed(1)} MB)\n'
       'Saved to: ${saveDir.path}');
-}
-
-/// Generate silent MP3 frames for the given duration.
-Uint8List _generateMp3Silence(int durationMs) {
-  // MP3 frame at 128kbps 44100Hz: 417 bytes, ~26ms
-  const frameSize = 417;
-  const frameDurationMs = 26;
-  final numFrames = (durationMs / frameDurationMs).ceil();
-
-  final silentFrame = Uint8List(frameSize);
-  silentFrame[0] = 0xFF;
-  silentFrame[1] = 0xFB;
-  silentFrame[2] = 0x90;
-  silentFrame[3] = 0x00;
-
-  final out = BytesBuilder();
-  for (int i = 0; i < numFrames; i++) {
-    out.add(silentFrame);
-  }
-  return out.toBytes();
 }

@@ -19,8 +19,8 @@ Future<void> generatePlatformAudio(
 
   onProgress?.call(0, entries.length, 'Downloading audio from TTS API...');
 
-  // Download audio for each subtitle
-  final segments = <int, Uint8List>{};
+  // Download all segments
+  final segments = <Uint8List>[];
   for (int i = 0; i < entries.length; i++) {
     final entry = entries[i];
     final text = entry.displayText.trim();
@@ -32,10 +32,10 @@ Future<void> generatePlatformAudio(
       targetDurationMs: entry.duration.inMilliseconds,
     );
 
-    if (audioBytes != null && audioBytes.isNotEmpty) segments[i] = audioBytes;
+    if (audioBytes != null && audioBytes.isNotEmpty) segments.add(audioBytes);
 
     onProgress?.call(i + 1, entries.length, 'Downloaded ${i + 1}/${entries.length}');
-    await Future.delayed(const Duration(milliseconds: 50));
+    await Future.delayed(const Duration(milliseconds: 100));
   }
 
   if (segments.isEmpty) {
@@ -43,30 +43,10 @@ Future<void> generatePlatformAudio(
     return;
   }
 
-  // Combine with silence
+  // Concatenate all segments directly
   final output = BytesBuilder();
-  var posMs = 0;
-
-  for (int i = 0; i < entries.length; i++) {
-    final entry = entries[i];
-    final startMs = entry.startTime.inMilliseconds;
-
-    if (startMs > posMs) {
-      output.add(_mp3Silence(startMs - posMs));
-      posMs = startMs;
-    }
-
-    final seg = segments[i];
-    if (seg != null) {
-      output.add(seg);
-      posMs += entry.duration.inMilliseconds;
-    }
-
-    final endMs = entry.endTime.inMilliseconds;
-    if (posMs < endMs) {
-      output.add(_mp3Silence(endMs - posMs));
-      posMs = endMs;
-    }
+  for (final seg in segments) {
+    output.add(seg);
   }
 
   // Trigger browser download
@@ -89,15 +69,4 @@ Future<void> generatePlatformAudio(
   final sizeMb = bytes.length / (1024 * 1024);
   onProgress?.call(entries.length, entries.length,
       'Done! MP3 downloaded (${sizeMb.toStringAsFixed(1)} MB)');
-}
-
-Uint8List _mp3Silence(int ms) {
-  const frameSize = 417;
-  const frameDur = 26;
-  final frames = (ms / frameDur).ceil();
-  final frame = Uint8List(frameSize);
-  frame[0] = 0xFF; frame[1] = 0xFB; frame[2] = 0x90; frame[3] = 0x00;
-  final out = BytesBuilder();
-  for (int i = 0; i < frames; i++) out.add(frame);
-  return out.toBytes();
 }
