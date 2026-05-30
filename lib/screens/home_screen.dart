@@ -46,30 +46,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeTts() async {
     await _ttsService.initialize();
+    // Set default language
+    await _ttsService.setLanguage(_targetLanguage.code);
     final languages = await _ttsService.getLanguages();
     final voices = await _ttsService.getVoices();
     if (mounted) {
       setState(() {
         _availableLanguages = languages;
         _allVoices = voices;
-        if (languages.isNotEmpty) {
-          _selectedVoiceLanguage = languages.firstWhere(
-            (l) => l.startsWith('en'),
-            orElse: () => languages.first,
-          );
-          _filterVoices();
-        }
+        _filterVoices();
       });
     }
   }
 
   void _filterVoices() {
-    if (_selectedVoiceLanguage == null) {
-      _filteredVoices = _allVoices;
-    } else {
-      _filteredVoices = _ttsService.filterVoicesByLanguage(_allVoices, _selectedVoiceLanguage!);
-    }
-    // Reset selected voice if it's not in the filtered list
+    _filteredVoices = _ttsService.filterVoicesByLanguage(_allVoices, _targetLanguage.code);
     if (_selectedVoice != null && !_filteredVoices.contains(_selectedVoice)) {
       _selectedVoice = _filteredVoices.isNotEmpty ? _filteredVoices.first : null;
     }
@@ -135,8 +126,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _generateAudio() async {
     if (_subtitles.isEmpty) { _showError('Load a subtitle file first'); return; }
 
-    if (_selectedVoiceLanguage != null) await _ttsService.setLanguage(_selectedVoiceLanguage!);
-    if (_selectedVoice != null) await _ttsService.setVoice(_selectedVoice!);
+    // Set language for the TTS API
+    await _ttsService.setLanguage(_targetLanguage.code);
     await _ttsService.setPitch(_pitch);
 
     setState(() { _isGenerating = true; _isSpeaking = true; _progress = 0; _statusMessage = 'Generating...'; _currentSpeakingIndex = -1; });
@@ -160,7 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _previewSpeak() async {
     if (_subtitles.isEmpty) { _showError('Load a subtitle file first'); return; }
-    if (_selectedVoiceLanguage != null) await _ttsService.setLanguage(_selectedVoiceLanguage!);
+    await _ttsService.setLanguage(_targetLanguage.code);
     if (_selectedVoice != null) await _ttsService.setVoice(_selectedVoice!);
     await _ttsService.setPitch(_pitch);
 
@@ -279,26 +270,34 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildVoiceSettingsSection() {
     return Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('3. Choose Voice', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 4),
+      const Text('Select the language for the generated voice audio.', style: TextStyle(fontSize: 12, color: Colors.grey)),
       const SizedBox(height: 12),
-      // Voice language selector
-      if (_availableLanguages.isNotEmpty)
-        DropdownButtonFormField<String>(value: _selectedVoiceLanguage, isExpanded: true,
-          decoration: const InputDecoration(labelText: 'Voice Language', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-          items: _availableLanguages.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
-          onChanged: (v) {
-            if (v != null) {
-              setState(() { _selectedVoiceLanguage = v; _filterVoices(); });
-              _ttsService.setLanguage(v);
-            }
-          }),
+      // Voice language for TTS API - uses supportedLanguages which works everywhere
+      DropdownButtonFormField<Language>(
+        value: _targetLanguage,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Voice Language (for MP3 generation)',
+          border: OutlineInputBorder(),
+          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        ),
+        items: supportedLanguages.map((l) => DropdownMenuItem(value: l, child: Text(l.name))).toList(),
+        onChanged: (v) {
+          if (v != null) {
+            setState(() => _targetLanguage = v);
+            _ttsService.setLanguage(v.code);
+          }
+        },
+      ),
       const SizedBox(height: 12),
-      // Voice selector - FILTERED by language, clean names
-      if (_filteredVoices.isNotEmpty)
+      // Device voice selector for Preview (only shown if device voices available)
+      if (!kIsWeb && _filteredVoices.isNotEmpty) ...[
         DropdownButtonFormField<Map<String, String>>(
           value: _filteredVoices.contains(_selectedVoice) ? _selectedVoice : null,
           isExpanded: true,
           decoration: InputDecoration(
-            labelText: 'Select Voice (${_filteredVoices.length} available)',
+            labelText: 'Device Voice for Preview (${_filteredVoices.length} available)',
             border: const OutlineInputBorder(),
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           ),
@@ -309,10 +308,9 @@ class _HomeScreenState extends State<HomeScreen> {
           onChanged: (v) {
             if (v != null) { setState(() => _selectedVoice = v); _ttsService.setVoice(v); }
           },
-        )
-      else if (_selectedVoiceLanguage != null)
-        const Text('No voices found for this language', style: TextStyle(color: Colors.orange)),
-      const SizedBox(height: 16),
+        ),
+        const SizedBox(height: 12),
+      ],
       // Speed slider
       Row(children: [
         const SizedBox(width: 80, child: Text('Base Speed:')),
