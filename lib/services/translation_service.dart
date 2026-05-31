@@ -3,8 +3,6 @@ import 'package:http/http.dart' as http;
 import '../models/subtitle_entry.dart';
 
 class TranslationService {
-  /// Translate text using the MyMemory Translation API (free).
-  /// [sourceLanguage] and [targetLanguage] should be language codes like 'en', 'es', etc.
   static Future<String> translate(
     String text,
     String sourceLanguage,
@@ -19,7 +17,7 @@ class TranslationService {
     );
 
     try {
-      final response = await http.get(uri);
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final translatedText = data['responseData']?['translatedText'];
@@ -30,33 +28,43 @@ class TranslationService {
     } catch (e) {
       print('Translation error: $e');
     }
-
-    // Return original text if translation fails
     return text;
   }
 
-  /// Translate all subtitle entries.
+  /// Translate all subtitle entries using PARALLEL batches for speed.
+  /// Processes 5 entries at a time concurrently.
   static Future<List<SubtitleEntry>> translateSubtitles(
     List<SubtitleEntry> entries,
     String sourceLanguage,
     String targetLanguage, {
     Function(int current, int total)? onProgress,
   }) async {
-    for (int i = 0; i < entries.length; i++) {
-      final translated = await translate(
-        entries[i].text,
-        sourceLanguage,
-        targetLanguage,
-      );
-      entries[i].translatedText = translated;
+    const batchSize = 5; // 5 parallel requests at a time
+    int completed = 0;
 
-      if (onProgress != null) {
-        onProgress(i + 1, entries.length);
+    for (int batchStart = 0; batchStart < entries.length; batchStart += batchSize) {
+      final batchEnd = (batchStart + batchSize).clamp(0, entries.length);
+
+      // Launch all translations in this batch in parallel
+      final futures = <Future<void>>[];
+      for (int i = batchStart; i < batchEnd; i++) {
+        futures.add(() async {
+          final translated = await translate(
+            entries[i].text,
+            sourceLanguage,
+            targetLanguage,
+          );
+          entries[i].translatedText = translated;
+        }());
       }
 
-      // Small delay to avoid rate limiting
-      await Future.delayed(const Duration(milliseconds: 100));
+      // Wait for the entire batch to finish
+      await Future.wait(futures);
+
+      completed = batchEnd;
+      onProgress?.call(completed, entries.length);
     }
+
     return entries;
   }
 }

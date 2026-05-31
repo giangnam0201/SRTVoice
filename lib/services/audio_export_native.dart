@@ -7,10 +7,9 @@ import 'tts_service.dart';
 import 'tts_api_service.dart';
 import 'audio_export_service.dart';
 
-/// Native implementation using the free TTS API (tts-api.netlify.app).
-/// Downloads audio for each subtitle with speed adjusted to match timing,
-/// then concatenates all segments directly into one audio file.
-/// No fake silence frames - just real audio back to back.
+/// Native implementation using the free TTS API.
+/// Downloads audio for each subtitle in PARALLEL batches for speed,
+/// then concatenates all segments into one MP3 file.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -20,39 +19,43 @@ Future<void> generatePlatformAudio(
 ) async {
   final language = ttsService.currentLanguage ?? 'en';
 
-  onProgress?.call(0, entries.length, 'Downloading audio from TTS API...');
+  onProgress?.call(0, entries.length, 'Downloading audio (parallel)...');
 
-  // Download audio for each subtitle with speed matching its duration
-  final segments = <Uint8List>[];
+  // Download audio in PARALLEL BATCHES of 5 for speed
+  const batchSize = 5;
+  final segments = <int, Uint8List>{};
+  int completed = 0;
 
-  for (int i = 0; i < entries.length; i++) {
-    final entry = entries[i];
-    final text = entry.displayText.trim();
+  for (int batchStart = 0; batchStart < entries.length; batchStart += batchSize) {
+    final batchEnd = (batchStart + batchSize).clamp(0, entries.length);
 
-    if (text.isEmpty) continue;
+    // Launch all downloads in this batch in parallel
+    final futures = <Future<void>>[];
+    for (int i = batchStart; i < batchEnd; i++) {
+      futures.add(() async {
+        final entry = entries[i];
+        final text = entry.displayText.trim();
+        if (text.isEmpty) return;
 
-    final targetMs = entry.duration.inMilliseconds;
+        final targetMs = entry.duration.inMilliseconds;
+        final audioBytes = await TtsApiService.generateWithTiming(
+          text,
+          language,
+          targetDurationMs: targetMs,
+        );
 
-    // Generate audio with speed adjusted to fit the subtitle duration
-    final audioBytes = await TtsApiService.generateWithTiming(
-      text,
-      language,
-      targetDurationMs: targetMs,
-    );
-
-    if (audioBytes != null && audioBytes.isNotEmpty) {
-      segments.add(audioBytes);
-    } else {
-      // If API fails for this entry, skip it
-      onProgress?.call(i + 1, entries.length,
-          'Warning: Failed to get audio for entry ${i + 1}, skipping...');
+        if (audioBytes != null && audioBytes.isNotEmpty) {
+          segments[i] = audioBytes;
+        }
+      }());
     }
 
-    onProgress?.call(i + 1, entries.length,
-        'Downloaded ${i + 1}/${entries.length} (${segments.length} OK)');
+    // Wait for entire batch
+    await Future.wait(futures);
 
-    // Small delay between requests
-    await Future.delayed(const Duration(milliseconds: 100));
+    completed = batchEnd;
+    onProgress?.call(completed, entries.length,
+        'Downloaded $completed/${entries.length} (${segments.length} OK)');
   }
 
   if (segments.isEmpty) {
@@ -62,14 +65,13 @@ Future<void> generatePlatformAudio(
   }
 
   onProgress?.call(entries.length, entries.length,
-      'Combining ${segments.length} audio segments...');
+      'Combining ${segments.length} segments...');
 
-  // Simply concatenate all audio segments.
-  // The TTS API already adjusted the speed of each segment to match subtitle duration.
-  // No fake silence needed - just real audio back to back.
+  // Concatenate segments in ORDER
   final output = BytesBuilder();
-  for (final segment in segments) {
-    output.add(segment);
+  for (int i = 0; i < entries.length; i++) {
+    final seg = segments[i];
+    if (seg != null) output.add(seg);
   }
 
   // Save MP3 file

@@ -7,7 +7,7 @@ import 'tts_service.dart';
 import 'tts_api_service.dart';
 import 'audio_export_service.dart';
 
-/// Web implementation: Downloads audio from TTS API and triggers browser download.
+/// Web implementation: Downloads audio in PARALLEL and triggers browser download.
 Future<void> generatePlatformAudio(
   List<SubtitleEntry> entries,
   TtsService ttsService,
@@ -17,25 +17,35 @@ Future<void> generatePlatformAudio(
 ) async {
   final language = ttsService.currentLanguage ?? 'en';
 
-  onProgress?.call(0, entries.length, 'Downloading audio from TTS API...');
+  onProgress?.call(0, entries.length, 'Downloading audio (parallel)...');
 
-  // Download all segments
-  final segments = <Uint8List>[];
-  for (int i = 0; i < entries.length; i++) {
-    final entry = entries[i];
-    final text = entry.displayText.trim();
-    if (text.isEmpty) continue;
+  // Download in parallel batches of 5
+  const batchSize = 5;
+  final segments = <int, Uint8List>{};
+  int completed = 0;
 
-    final audioBytes = await TtsApiService.generateWithTiming(
-      text,
-      language,
-      targetDurationMs: entry.duration.inMilliseconds,
-    );
+  for (int batchStart = 0; batchStart < entries.length; batchStart += batchSize) {
+    final batchEnd = (batchStart + batchSize).clamp(0, entries.length);
 
-    if (audioBytes != null && audioBytes.isNotEmpty) segments.add(audioBytes);
+    final futures = <Future<void>>[];
+    for (int i = batchStart; i < batchEnd; i++) {
+      futures.add(() async {
+        final entry = entries[i];
+        final text = entry.displayText.trim();
+        if (text.isEmpty) return;
 
-    onProgress?.call(i + 1, entries.length, 'Downloaded ${i + 1}/${entries.length}');
-    await Future.delayed(const Duration(milliseconds: 100));
+        final audioBytes = await TtsApiService.generateWithTiming(
+          text,
+          language,
+          targetDurationMs: entry.duration.inMilliseconds,
+        );
+        if (audioBytes != null && audioBytes.isNotEmpty) segments[i] = audioBytes;
+      }());
+    }
+
+    await Future.wait(futures);
+    completed = batchEnd;
+    onProgress?.call(completed, entries.length, 'Downloaded $completed/${entries.length}');
   }
 
   if (segments.isEmpty) {
@@ -43,10 +53,11 @@ Future<void> generatePlatformAudio(
     return;
   }
 
-  // Concatenate all segments directly
+  // Concatenate in order
   final output = BytesBuilder();
-  for (final seg in segments) {
-    output.add(seg);
+  for (int i = 0; i < entries.length; i++) {
+    final seg = segments[i];
+    if (seg != null) output.add(seg);
   }
 
   // Trigger browser download
