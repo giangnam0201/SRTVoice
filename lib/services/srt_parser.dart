@@ -73,4 +73,16 @@ class SrtParser {
     final milliseconds = (duration.inMilliseconds % 1000).toString().padLeft(3, '0');
     return '$hours:$minutes:$seconds,$milliseconds';
   }
+
+  /// Convert subtitle entries back to SRT format string.
+  static String toSrt(List<SubtitleEntry> entries) {
+    final buffer = StringBuffer();
+    for (final entry in entries) {
+      buffer.writeln('${entry.index}');
+      buffer.writeln('${formatTimestamp(entry.startTime)} --> ${formatTimestamp(entry.endTime)}');
+      buffer.writeln(entry.displayText);
+      buffer.writeln();
+    }
+    return buffer.toString();
+  }
 }

@@ -39,7 +39,7 @@ class TranslationService {
     String targetLanguage, {
     Function(int current, int total)? onProgress,
   }) async {
-    const batchSize = 5; // 5 parallel requests at a time
+    const batchSize = 10; // 10 parallel requests at a time
     int completed = 0;
 
     for (int batchStart = 0; batchStart < entries.length; batchStart += batchSize) {

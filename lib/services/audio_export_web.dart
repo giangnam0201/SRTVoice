@@ -19,8 +19,8 @@ Future<void> generatePlatformAudio(
 
   onProgress?.call(0, entries.length, 'Downloading audio (parallel)...');
 
-  // Download in parallel batches of 5
-  const batchSize = 5;
+  // Download in parallel batches of 10
+  const batchSize = 10;
   final segments = <int, Uint8List>{};
   int completed = 0;
 

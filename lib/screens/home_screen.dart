@@ -8,6 +8,7 @@ import '../services/srt_parser.dart';
 import '../services/translation_service.dart';
 import '../services/tts_service.dart';
 import '../services/audio_export_service.dart';
+import '../services/srt_export_helper.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -121,6 +122,13 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _isTranslating = false);
     }
+  }
+
+  Future<void> _exportTranslatedSrt() async {
+    if (_subtitles.isEmpty) return;
+    final srtContent = SrtParser.toSrt(_subtitles);
+    final result = await SrtExportHelper.export(srtContent);
+    if (mounted) setState(() => _statusMessage = result);
   }
 
   Future<void> _generateAudio() async {
@@ -260,10 +268,18 @@ class _HomeScreenState extends State<HomeScreen> {
           onChanged: (v) { if (v != null) setState(() => _targetLanguage = v); })),
       ]),
       const SizedBox(height: 12),
-      SizedBox(width: double.infinity, child: ElevatedButton.icon(
-        onPressed: (_isTranslating || _subtitles.isEmpty) ? null : _translateSubtitles,
-        icon: _isTranslating ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.translate),
-        label: Text(_isTranslating ? 'Translating...' : 'Translate'))),
+      Row(children: [
+        Expanded(child: ElevatedButton.icon(
+          onPressed: (_isTranslating || _subtitles.isEmpty) ? null : _translateSubtitles,
+          icon: _isTranslating ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.translate),
+          label: Text(_isTranslating ? 'Translating...' : 'Translate'))),
+        const SizedBox(width: 8),
+        ElevatedButton.icon(
+          onPressed: (_subtitles.isEmpty || !_subtitles.any((e) => e.translatedText != null)) ? null : _exportTranslatedSrt,
+          icon: const Icon(Icons.save_alt),
+          label: const Text('Export SRT'),
+        ),
+      ]),
     ])));
   }
 
