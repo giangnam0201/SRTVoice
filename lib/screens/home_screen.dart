@@ -25,7 +25,8 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, String>> _filteredVoices = [];
 
   Language _sourceLanguage = supportedLanguages[0];
-  Language _targetLanguage = supportedLanguages[0];
+  Language _targetLanguage = supportedLanguages[12]; // Vietnamese
+  Language _voiceLanguage = supportedLanguages[12]; // Vietnamese
   String? _selectedVoiceLanguage;
   Map<String, String>? _selectedVoice;
 
@@ -47,8 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeTts() async {
     await _ttsService.initialize();
-    // Set default language
-    await _ttsService.setLanguage(_targetLanguage.code);
+    await _ttsService.setLanguage(_voiceLanguage.code);
     final languages = await _ttsService.getLanguages();
     final voices = await _ttsService.getVoices();
     if (mounted) {
@@ -61,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _filterVoices() {
-    _filteredVoices = _ttsService.filterVoicesByLanguage(_allVoices, _targetLanguage.code);
+    _filteredVoices = _ttsService.filterVoicesByLanguage(_allVoices, _voiceLanguage.code);
     if (_selectedVoice != null && !_filteredVoices.contains(_selectedVoice)) {
       _selectedVoice = _filteredVoices.isNotEmpty ? _filteredVoices.first : null;
     }
@@ -135,7 +135,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_subtitles.isEmpty) { _showError('Load a subtitle file first'); return; }
 
     // Set language for the TTS API
-    await _ttsService.setLanguage(_targetLanguage.code);
+    await _ttsService.setLanguage(_voiceLanguage.code);
     await _ttsService.setPitch(_pitch);
 
     setState(() { _isGenerating = true; _isSpeaking = true; _progress = 0; _statusMessage = 'Generating...'; _currentSpeakingIndex = -1; });
@@ -159,7 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _previewSpeak() async {
     if (_subtitles.isEmpty) { _showError('Load a subtitle file first'); return; }
-    await _ttsService.setLanguage(_targetLanguage.code);
+    await _ttsService.setLanguage(_voiceLanguage.code);
     if (_selectedVoice != null) await _ttsService.setVoice(_selectedVoice!);
     await _ttsService.setPitch(_pitch);
 
@@ -291,7 +291,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const SizedBox(height: 12),
       // Voice language for TTS API - uses supportedLanguages which works everywhere
       DropdownButtonFormField<Language>(
-        value: _targetLanguage,
+        value: _voiceLanguage,
         isExpanded: true,
         decoration: const InputDecoration(
           labelText: 'Voice Language (for MP3 generation)',
@@ -301,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen> {
         items: supportedLanguages.map((l) => DropdownMenuItem(value: l, child: Text(l.name))).toList(),
         onChanged: (v) {
           if (v != null) {
-            setState(() => _targetLanguage = v);
+            setState(() { _voiceLanguage = v; _filterVoices(); });
             _ttsService.setLanguage(v.code);
           }
         },
